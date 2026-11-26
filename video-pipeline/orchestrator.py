@@ -1,0 +1,133 @@
+"""
+orchestrator.py  (adapted for Sanju's Hindi taxi reel)
+Runs on GitHub Actions (CPU only, no GPU needed). Talks to the Kaggle API to:
+  1. Push a kernel (video-pipeline/kaggle_kernel_generate.py) with the user's
+     prompt baked in.
+  2. Poll until the Kaggle GPU kernel finishes running.
+  3. Download the kernel's output.mp4 back into the repo/workflow artifact.
+
+Adapted from: https://github.com/soumyabandi252/mytho-verse-video-gen
+
+Requires:
+  pip install kaggle
+  Kaggle API token as env vars: KAGGLE_USERNAME, KAGGLE_KEY
+  (Store these as GitHub Actions secrets, never commit them.)
+
+Usage (from the repo root):
+  python video-pipeline/orchestrator.py --prompt "A young Indian woman hails a yellow taxi in the rain at night, a man steals it, twist: he is her father" \
+                          --kaggle-user your_kaggle_username \
+                          --slug sanju-taxi-reel
+
+Important: The Kaggle CLI does NOT inherit the accelerator you pick in the web UI
+when pushing headlessly. The "machine_shape": "NvidiaTeslaT4" field below is what
+actually forces a T4 GPU instead of Kaggle's default P100 assignment. This must be
+present in kernel-metadata.json on every single push, not just set once in the UI.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+KERNEL_SCRIPT = "video-pipeline/kaggle_kernel_generate.py"
+POLL_INTERVAL_SECONDS = 60
+MAX_WAIT_SECONDS = 3 * 60 * 60  # 3 hours safety cap
+
+DEFAULT_PROMPT = (
+    "A young Indian woman hails a yellow taxi in the rain at night, "
+    "a man steals it, twist: he is her father"
+)
+
+
+def build_kernel_folder(work_dir: Path, kaggle_user: str, slug: str, prompt: str):
+    work_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy(KERNEL_SCRIPT, work_dir / Path(KERNEL_SCRIPT).name)
+
+    metadata = {
+        "id": f"{kaggle_user}/{slug}",
+        "title": slug,
+        "code_file": Path(KERNEL_SCRIPT).name,
+        "language": "python",
+        "kernel_type": "script",
+        "is_private": True,
+        "enable_gpu": True,
+        "enable_internet": True,
+        "machine_shape": "NvidiaTeslaT4",
+        "dataset_sources": [],
+        "competition_sources": [],
+        "kernel_sources": [],
+        "model_sources": [],
+    }
+    with open(work_dir / "kernel-metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    # Embed the prompt directly into the script since Kaggle kernels don't
+    # accept custom runtime env vars via the push API.
+    script_path = work_dir / Path(KERNEL_SCRIPT).name
+    content = script_path.read_text()
+    old = (
+        'PROMPT = os.environ.get(\n    "SCENE_PROMPT",\n'
+        f'    "{DEFAULT_PROMPT}"\n)'
+    )
+    if old not in content:
+        raise RuntimeError("Could not find the PROMPT block to replace in the kernel script.")
+    content = content.replace(old, f"PROMPT = {json.dumps(prompt)}")
+    script_path.write_text(content)
+
+
+def push_kernel(work_dir: Path):
+    subprocess.run(["kaggle", "kernels", "push", "-p", str(work_dir)], check=True)
+
+
+def wait_for_completion(kaggle_user: str, slug: str):
+    kernel_ref = f"{kaggle_user}/{slug}"
+    elapsed = 0
+    while elapsed < MAX_WAIT_SECONDS:
+        result = subprocess.run(
+            ["kaggle", "kernels", "status", kernel_ref],
+            capture_output=True, text=True
+        )
+        status_line = result.stdout.strip()
+        print(f"[{elapsed}s] {status_line}")
+        if '"complete"' in status_line or 'has status "complete"' in status_line:
+            return True
+        if "error" in status_line.lower():
+            raise RuntimeError(f"Kaggle kernel failed: {status_line}")
+        time.sleep(POLL_INTERVAL_SECONDS)
+        elapsed += POLL_INTERVAL_SECONDS
+    raise TimeoutError("Kaggle kernel did not finish within the max wait window.")
+
+
+def download_output(kaggle_user: str, slug: str, dest_dir: Path):
+    kernel_ref = f"{kaggle_user}/{slug}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["kaggle", "kernels", "output", kernel_ref, "-p", str(dest_dir)],
+        check=True
+    )
+    mp4_path = dest_dir / "output.mp4"
+    if not mp4_path.exists():
+        raise FileNotFoundError("output.mp4 not found in kernel output.")
+    return mp4_path
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--kaggle-user", required=True)
+    parser.add_argument("--slug", default="sanju-taxi-reel")
+    args = parser.parse_args()
+
+    work_dir = Path("kaggle_job")
+    build_kernel_folder(work_dir, args.kaggle_user, args.slug, args.prompt)
+    push_kernel(work_dir)
+    wait_for_completion(args.kaggle_user, args.slug)
+    output_path = download_output(args.kaggle_user, args.slug, Path("output"))
+    print(f"Video ready at: {output_path}")
+
+
+if __name__ == "__main__":
+    main()
