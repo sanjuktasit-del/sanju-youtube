@@ -33,8 +33,14 @@ vertical 9:16, 5 story beats, Hindi narration.
    - `KAGGLE_USERNAME`
    - `KAGGLE_KEY`
    Never commit these. They are secrets, not files.
-4. Go to the Actions tab, select "Generate Taxi Reel", click "Run workflow".
-5. Wait. First run can take 30 to 90+ minutes (model downloads + Kaggle
+4. Add the workflow file (one-time, 2 minutes, in your browser):
+   GitHub does not let an app create workflow files, so this one step is
+   manual. On github.com, open this repo, click "Add file", "Create new
+   file", name it `.github/workflows/generate-taxi-reel.yml`, and paste in
+   the contents of `video-pipeline/generate-taxi-reel.yml` from this repo.
+   Commit it. That is the only file I could not push for you.
+5. Go to the Actions tab, select "Generate Taxi Reel", click "Run workflow".
+6. Wait. First run can take 30 to 90+ minutes (model downloads + Kaggle
    GPU queue). Later runs are faster. Then download `output.mp4` from the
    run's Artifacts section.
 

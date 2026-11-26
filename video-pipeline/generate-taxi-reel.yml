@@ -1,0 +1,50 @@
+name: Generate Taxi Reel
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Describe the scene (Hindi taxi reel, any prompt)"
+        required: true
+        default: "A young Indian woman hails a yellow taxi in the rain at night, a man steals it, twist: he is her father"
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240   # Kaggle free GPU runs can take a while; generous ceiling
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Kaggle CLI
+        run: pip install kaggle
+
+      - name: Configure Kaggle credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          mkdir -p ~/.kaggle
+          echo "{\"username\":\"$KAGGLE_USERNAME\",\"key\":\"$KAGGLE_KEY\"}" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Run orchestrator (push job, wait, pull video)
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          python video-pipeline/orchestrator.py \
+            --prompt "${{ github.event.inputs.prompt }}" \
+            --kaggle-user "$KAGGLE_USERNAME" \
+            --slug "sanju-taxi-reel"
+
+      - name: Upload final video as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: taxi-reel-video
+          path: output/output.mp4
